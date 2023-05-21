@@ -1,15 +1,16 @@
 import os
+import json
 from sqlalchemy.orm import Session
 from fastapi import UploadFile
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
 from datetime import date
+from database import redis_client
 import uuid
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 import cloudinary
 import cloudinary.uploader
-
 
 import models
 import schemas
@@ -53,11 +54,27 @@ def get_user_by_email(db: Session, email: str):
 
 
 def authenticate_user(db: Session, email: str, password: str):
-    user = get_user_by_email(db, email)
+    # Check if the user details are present in the cache
+    cached_user = redis_client.get(email)
+    if cached_user:
+        user_data = json.loads(cached_user)
+        user = models.User(**user_data)
+    else:
+        # If user details are not in the cache, fetch from the database
+        user = get_user_by_email(db, email)
+        if user:
+            # Store the user details in the cache
+            redis_client.set(email, json.dumps(user.dict()))
+
     if not user:
         return False
+
     if not user.check_password(password):
         return False
+
+    # Update the cached user details
+    redis_client.set(email, json.dumps(user.dict()))
+
     return user
 
 
@@ -77,7 +94,7 @@ def create_refresh_token(email: str):
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def verify_token(token: str):
+def verify_token(token: str, password_reset: bool = False):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
@@ -191,9 +208,24 @@ def send_verification_email(email: str, token: str):
         html_content=f"Click the link to verify your email: <a href='http://127.0.0.1:8000/verify/{token}'>Verify Email</a>",
     )
     try:
-        sg = SendGridAPIClient(
-            "SENDGRID_API_KEY"
-        )
+        sg = SendGridAPIClient("SENDGRID_API_KEY")
+        response = sg.send(message)
+        print(response.status_code)
+        print(response.body)
+        print(response.headers)
+    except Exception as e:
+        print(str(e))
+
+
+def send_password_reset_email(email: str, token: str):
+    message = Mail(
+        from_email="lyfenko@meta.ua",
+        to_emails=email,
+        subject="Password Reset",
+        html_content=f"Click the link to reset your password: <a href='http://127.0.0.1:8000/reset-password/{token}'>Reset Password</a>",
+    )
+    try:
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
         response = sg.send(message)
         print(response.status_code)
         print(response.body)

@@ -1,10 +1,11 @@
+import uuid
 from typing import List
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi_limiter.depends import RateLimiter
 from sqlalchemy.orm import Session
-from database import SessionLocal, engine
+from database import SessionLocal, engine, redis_client
 import models
 import crud
 import schemas
@@ -81,6 +82,48 @@ async def verify_email(token: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Email verified successfully"}
+
+
+@app.post("/reset-password/", tags=["Користувачі"])
+async def reset_password(
+    email: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    user = crud.get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Generate a password reset token
+    reset_token = str(uuid.uuid4())
+
+    # Send the password reset email
+    crud.send_password_reset_email(user.email, reset_token)
+
+    return {"message": "Password reset email sent successfully"}
+
+
+@app.post("/reset-password/{reset_token}/", tags=["Користувачі"])
+async def update_password(
+    reset_token: str,
+    new_password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    email = crud.verify_token(reset_token)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid reset token")
+
+    user = crud.get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Update the user's password
+    user.set_password(new_password)
+    db.commit()
+
+    # Remove the cached user details
+    redis_client.delete(email)
+
+    return {"message": "Password updated successfully"}
 
 
 @app.get("/contacts/", response_model=List[schemas.Contact], tags=["Контакти"])
